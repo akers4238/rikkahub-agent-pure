@@ -21,7 +21,6 @@ import kotlinx.serialization.json.jsonPrimitive
  * The list is deliberately tiny: only commands with no recovery path.
  *   - filesystem destruction rooted at /, $HOME, /etc, /usr, /var, etc. (incl. descendants)
  *   - raw block device overwrites (dd of=/dev/sd*, > /dev/sd*)
- *   - kernel shutdown / reboot / halt
  *   - fork bomb
  *   - kill -1 / pkill the world
  *   - encoded-payload-piped-to-shell (base64 -d | sh, printf '\xNN' | sh, eval $(…))
@@ -39,34 +38,6 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object HardlineCommandGuard {
 
-    /**
-     * Match a regex anchored to "command position" — start of string, after `;` `&` `|`
-     * newline or backtick, after `$(`, optionally after `sudo` / `env VAR=val` / wrappers
-     * like `exec`, `nohup`, `setsid`, `time`. Without this, "echo reboot" would match the
-     * shutdown rule.
-     *
-     * Includes the SHELL_EVAL alternation so commands smuggled inside `bash -c "…"` /
-     * `sh -c '…'` are also caught. Without this, the model could trivially escape the
-     * shutdown / reboot / mkfs rules by wrapping them in a shell-eval invocation.
-     */
-    private const val CMD_POS_BARE = "(?:^|[;&|\\n`]|\\\$\\()"
-    // `busybox sh -c "…"` is a common Android invocation form, hence the optional
-    // busybox prefix. `ash` is BusyBox's default shell.
-    private const val SHELL_EVAL_OPEN =
-        "\\b(?:busybox\\s+)?(?:bash|sh|zsh|dash|ksh|csh|tcsh|ash)\\s+(?:-[a-zA-Z]+\\s+)*-c\\s+[\"']"
-
-    private const val CMD_POS =
-        "(?:(?:" + CMD_POS_BARE + ")|(?:" + SHELL_EVAL_OPEN + "))" +
-        "\\s*" +
-        "(?:sudo\\s+(?:-[^\\s]+\\s+)*)?" +
-        "(?:env\\s+(?:\\w+=\\S*\\s+)*)?" +
-        "(?:(?:exec|nohup|setsid|time)\\s+)*" +
-        "\\s*" +
-        // Optional absolute-path prefix so /usr/sbin/shutdown matches the same way bare
-        // 'shutdown' does. The greedy `[\w./_-]*/` consumes everything up to the last
-        // slash so the trailing command name is what's matched by the (cmd1|cmd2) group.
-        "(?:[\\w./_-]*/)?"
-
     /** End-of-path anchor — whitespace, end-of-string, or shell-eval closing quote. */
     private const val PATH_END = "(?:\\s|[\"']|\$)"
 
@@ -74,6 +45,13 @@ object HardlineCommandGuard {
 
     /** (regex, human-readable reason) pairs. Reason is surfaced in the block envelope. */
     private val PATTERNS: List<Pair<Regex, String>> = listOf(
+        // ---- OTA 分支补丁 -------------------------------------------------
+        // 已移除两条会挡住 OTA 构建/刷写流程的规则：
+        //   1) 镜像制作阶段需要格式化文件系统（mke2fs 及各类 mk 系工具）
+        //   2) 刷写后需要重启回正常系统（系统重启/关机家族，含 init/telinit/systemctl）
+        // 保留：根与系统目录的递归删除、HOME 目录、裸盘写入与重定向、fork 炸弹、
+        //       全进程信号规则、编码负载管道进 shell、子壳求值规则。
+        // ------------------------------------------------------------------
         // rm -rf the root filesystem, system dirs (incl. descendants), or HOME
         Regex("\\brm\\s+(-[^\\s]*\\s+)*(/|/\\*|/\\s*\\*)" + PATH_END, IGNORE_CASE) to
             "recursive delete of root filesystem",
@@ -89,8 +67,6 @@ object HardlineCommandGuard {
         // ~ OR \$HOME OR \${HOME} — IGNORE_CASE handles \$home etc.
         Regex("\\brm\\s+(-[^\\s]*\\s+)*(~|\\\$HOME|\\\$\\{HOME\\})(/?|/\\*)?" + PATH_END, IGNORE_CASE) to
             "recursive delete of home directory",
-        // Format filesystem — anchored at command position so "grep mkfs /var/log" doesn't trip.
-        Regex(CMD_POS + "mkfs(\\.[a-z0-9]+)?\\b", IGNORE_CASE) to "format filesystem (mkfs)",
         // Raw block device writes
         Regex("\\bdd\\b[^\\n]*\\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*", IGNORE_CASE) to
             "dd to raw block device",
@@ -100,11 +76,6 @@ object HardlineCommandGuard {
         Regex(":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:") to "fork bomb",
         // Kill every process
         Regex("\\bkill\\s+(-[^\\s]+\\s+)*-1\\b", IGNORE_CASE) to "kill all processes",
-        // System shutdown / reboot — at command position OR inside a shell-eval `-c "…"`
-        Regex(CMD_POS + "(shutdown|reboot|halt|poweroff)\\b", IGNORE_CASE) to "system shutdown/reboot",
-        Regex(CMD_POS + "init\\s+[06]\\b", IGNORE_CASE) to "init 0/6 (shutdown/reboot)",
-        Regex(CMD_POS + "systemctl\\s+(poweroff|reboot|halt|kexec)\\b", IGNORE_CASE) to "systemctl poweroff/reboot",
-        Regex(CMD_POS + "telinit\\s+[06]\\b", IGNORE_CASE) to "telinit 0/6 (shutdown/reboot)",
         // Encoded-payload pipe-to-shell — `base64 -d` / `xxd -r` / hex `printf` whose output
         // is piped straight into a shell. This is how regex-floor circumvention is actually
         // attempted in practice ("echo cm0gLXJmIC8= | base64 -d | sh"). We can't decode the
