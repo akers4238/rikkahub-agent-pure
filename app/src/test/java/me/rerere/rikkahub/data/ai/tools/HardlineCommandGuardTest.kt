@@ -12,6 +12,9 @@ import org.junit.Test
  */
 class HardlineCommandGuardTest {
 
+    // OTA 分支：文件系统格式化、系统重启/关机两条规则已移除（构建与刷写需要），
+    // 对应用例改为断言「放行」；其余规则的阻断用例保持原样。
+
     // -----------------------------------------------------------------------
     // Positive: hardline patterns MUST block
     // -----------------------------------------------------------------------
@@ -33,11 +36,12 @@ class HardlineCommandGuardTest {
         assertBlocked("rm -rf \$HOME")
     }
 
-    @Test fun `mkfs variants`() {
-        assertBlocked("mkfs /dev/sdb1")
-        assertBlocked("mkfs.ext4 /dev/sdb1")
-        assertBlocked("mkfs.ext4 /dev/loop0")
-        assertBlocked("mkfs.btrfs /dev/sda1")
+    @Test fun `mkfs variants are allowed for OTA image build`() {
+        // OTA 分支：镜像制作阶段必须能格式化文件系统，该规则已移除。
+        assertAllowed("mkfs /dev/sdb1")
+        assertAllowed("mkfs.ext4 /dev/sdb1")
+        assertAllowed("mkfs.ext4 /dev/loop0")
+        assertAllowed("mkfs.btrfs /dev/sda1")
     }
 
     @Test fun `dd to raw block device`() {
@@ -58,27 +62,20 @@ class HardlineCommandGuardTest {
         assertBlocked("kill -9 -1")
     }
 
-    @Test fun `shutdown reboot halt poweroff at command position`() {
+    @Test fun `shutdown family is allowed after OTA flash`() {
+        // OTA 分支：刷写完成后需要重启回正常系统，该规则已移除。
         for (cmd in listOf("shutdown", "shutdown -h now", "reboot", "halt", "poweroff")) {
-            assertBlocked(cmd)
-            assertBlocked("sudo $cmd")
-            assertBlocked("nohup $cmd")
-            // After a shell separator
-            assertBlocked("echo bye; $cmd")
-            assertBlocked("touch /tmp/x && $cmd")
+            assertAllowed(cmd)
+            assertAllowed("sudo $cmd")
+            assertAllowed("nohup $cmd")
+            assertAllowed("echo bye; $cmd")
         }
     }
 
-    @Test fun `shutdown family inside shell-eval -c`() {
-        // Bypass attempt: wrap the dangerous command in a `bash -c "…"` shell-eval
-        // invocation. The opening quote after `-c` is a command-position anchor too,
-        // so these MUST be blocked.
-        for (cmd in listOf("shutdown -h now", "reboot", "halt", "poweroff")) {
-            assertBlocked("""bash -c "$cmd"""")
-            assertBlocked("sh -c '$cmd'")
-            assertBlocked("""zsh -c "$cmd"""")
-            assertBlocked("""busybox sh -c "$cmd"""")
-        }
+    @Test fun `shutdown family inside shell-eval -c is allowed too`() {
+        // 规则整体移除后，shell-eval 包装形式同样放行。
+        assertAllowed("sh -c 'reboot'")
+        assertAllowed("sh -c 'shutdown -h now'")
     }
 
     @Test fun `rm rf inside shell-eval -c`() {
@@ -88,19 +85,16 @@ class HardlineCommandGuardTest {
         assertBlocked("sh -c 'rm -rf /usr/local'")
     }
 
-    @Test fun `mkfs inside shell-eval -c`() {
-        assertBlocked("""bash -c "mkfs.ext4 /dev/sdb1"""")
-        assertBlocked("sh -c 'mkfs /dev/sdb1'")
+    @Test fun `mkfs inside shell-eval -c is allowed too`() {
+        assertAllowed("sh -c 'mkfs.ext4 /dev/sdb1'")
     }
 
-    @Test fun `init inside shell-eval -c`() {
-        assertBlocked("""bash -c "init 0"""")
-        assertBlocked("sh -c 'init 6'")
+    @Test fun `init inside shell-eval -c is allowed too`() {
+        assertAllowed("sh -c 'init 0'")
     }
 
-    @Test fun `absolute path shutdown inside shell-eval -c`() {
-        assertBlocked("""bash -c "/usr/sbin/shutdown -h now"""")
-        assertBlocked("sh -c '/sbin/reboot'")
+    @Test fun `absolute path shutdown inside shell-eval -c is allowed too`() {
+        assertAllowed("sh -c '/usr/sbin/shutdown -h now'")
     }
 
     @Test fun `system dir descendants are blocked`() {
@@ -147,20 +141,20 @@ class HardlineCommandGuardTest {
         assertAllowed("eval echo hello")
     }
 
-    @Test fun `init 0 and init 6`() {
-        assertBlocked("init 0")
-        assertBlocked("init 6")
+    @Test fun `init 0 and init 6 are allowed`() {
+        assertAllowed("init 0")
+        assertAllowed("init 6")
     }
 
-    @Test fun `systemctl poweroff variants`() {
+    @Test fun `systemctl power variants are allowed`() {
         for (op in listOf("poweroff", "reboot", "halt", "kexec")) {
-            assertBlocked("systemctl $op")
+            assertAllowed("systemctl $op")
         }
     }
 
-    @Test fun `telinit shutdown reboot`() {
-        assertBlocked("telinit 0")
-        assertBlocked("telinit 6")
+    @Test fun `telinit variants are allowed`() {
+        assertAllowed("telinit 0")
+        assertAllowed("telinit 6")
     }
 
     // -----------------------------------------------------------------------
@@ -219,10 +213,11 @@ class HardlineCommandGuardTest {
         assertNotNull("expected hardline match", reason)
     }
 
-    @Test fun `termux executable+arguments form blocks shutdown`() {
+    @Test fun `termux executable+arguments form blocks dd to raw disk`() {
+        // 走 executable/arguments 通道的用例改用仍然拦截的裸盘写入。
         val reason = HardlineCommandGuard.checkTool(
             "termux_run_command",
-            """{"executable":"/usr/sbin/shutdown","arguments":["-h","now"]}"""
+            """{"executable":"dd","arguments":["if=/dev/zero","of=/dev/sda"]}"""
         )
         assertNotNull("expected hardline match in executable form", reason)
     }
@@ -235,10 +230,10 @@ class HardlineCommandGuardTest {
         assertNotNull("expected hardline match on ssh_exec", reason)
     }
 
-    @Test fun `ssh_exec_saved blocks mkfs`() {
+    @Test fun `ssh_exec_saved blocks dd to raw disk`() {
         val reason = HardlineCommandGuard.checkTool(
             "ssh_exec_saved",
-            """{"name":"box","command":"mkfs.ext4 /dev/sdb1"}"""
+            """{"name":"box","command":"dd if=/dev/zero of=/dev/sda"}"""
         )
         assertNotNull("expected hardline match on ssh_exec_saved", reason)
     }
