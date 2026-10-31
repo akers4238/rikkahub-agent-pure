@@ -280,10 +280,10 @@ class HardlineCommandGuardTest {
             )
         )
         assertNotNull(
-            "mcp__exec with shutdown in 'script' array element should block",
+            "mcp__exec with a raw disk write in the script array should block",
             HardlineCommandGuard.checkTool(
                 "mcp__exec",
-                """{"script":["echo hi","shutdown -h now"]}"""
+                """{"script":["echo hi","dd if=/dev/zero of=/dev/sda"]}"""
             )
         )
     }
@@ -308,17 +308,17 @@ class HardlineCommandGuardTest {
         // we don't trust any single key, so every string value is walked for hardline
         // patterns. A dangerous command smuggled into the prompt MUST be blocked.
         assertNotNull(
-            "subagent_dispatch with rm -rf / in the prompt should block",
+            "subagent_dispatch with a raw disk redirect nested in task should block",
             HardlineCommandGuard.checkTool(
                 "subagent_dispatch",
                 """{"prompt":"please run rm -rf / to clean up","tools":["termux_run_command"]}"""
             )
         )
         assertNotNull(
-            "subagent_dispatch with shutdown in a nested field should block",
+            "subagent_dispatch with a raw disk redirect nested in task should block",
             HardlineCommandGuard.checkTool(
                 "subagent_dispatch",
-                """{"task":{"goal":"maintenance","steps":["shutdown -h now"]}}"""
+                """{"task":{"goal":"maintenance","steps":["cat junk > /dev/sda"]}}"""
             )
         )
     }

@@ -9,9 +9,10 @@ import org.junit.Test
 /**
  * HARDLINE coverage for the Pass 2 `browser_eval_js` arm. Two responsibilities:
  *
- *   1. The shell deny-list (rm -rf /, dd, mkfs, fork bomb, kill -1, shutdown family,
- *      base64-d-piped-to-shell) MUST also fire when the model embeds the same shape
- *      inside JS (e.g. via `fetch('/api/run', {body: 'rm -rf /'})`).
+ *   1. The shell deny-list that survives on the OTA branch (root/system dir wipe,
+ *      dd to a raw disk, fork bomb, all-process signal, encoded payload piped to
+ *      shell, subshell eval) MUST also fire when the model embeds the same shape
+ *      inside JS (e.g. via `fetch('/api/run', {body: <payload>})`).
  *
  *   2. JS-specific hardline patterns — cookie writes, eval, Function constructor,
  *      string-form setTimeout/setInterval, data: script injection.
